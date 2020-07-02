@@ -15,8 +15,6 @@
 
 namespace verona::rt
 {
-  namespace bp = backpressure;
-
   template<class T>
   class SchedulerThread
   {
@@ -87,9 +85,24 @@ namespace verona::rt
     size_t total_cowns = 0;
     std::atomic<size_t> free_cowns = 0;
 
+    /**
+     * The body of a message running on this scheduler thread. This is used as
+     * the senders for backpressure scanning.
+     */
     typename T::MessageBody* message_body = nullptr;
 
+    /**
+     * Tracks cowns that are currently muted by the backpressure system. These
+     * cowns must not be collected until they are unmuted. A reference count is
+     * held for each cown in this set.
+     */
     ObjectMap<T*> muted;
+
+    /**
+     * Tracks cowns that are currently overloaded. A weak reference is held for
+     * each cown in this set to ensure that the backpressure bits on each entry
+     * are live.
+     */
     ObjectMap<T*> overloaded;
 
     T* get_token_cown()
@@ -212,7 +225,8 @@ namespace verona::rt
         auto* cown = it.key();
         Systematic::cout() << "Unmute " << cown << std::endl;
         auto bp = cown->backpressure.load(std::memory_order_relaxed);
-        bp = bp::unmute(bp);
+        assert(bp.muted());
+        bp.unmute();
         cown->backpressure.store(bp, std::memory_order_relaxed);
 
         cown->queue.wake();
@@ -236,16 +250,19 @@ namespace verona::rt
       if (muted.size() == 0)
         return;
 
-      size_t avg_load = 0;
-      for (auto* cown : overloaded)
-        avg_load +=
-          bp::load(cown->backpressure.load(std::memory_order_acquire));
+      for (auto it = overloaded.begin(); it != overloaded.end(); ++it)
+      {
+        auto* cown = *it;
+        const auto load =
+          cown->backpressure.load(std::memory_order_acquire).total_load();
+        if (load >= Backpressure::unoverload_threshold)
+          return;
 
-      if (overloaded.size() != 0)
-        avg_load /= overloaded.size();
+        cown->weak_release(alloc);
+        overloaded.erase(it);
+      }
 
-      if (avg_load < bp::unmute_threshold)
-        unmute();
+      unmute();
     }
 
     /**
