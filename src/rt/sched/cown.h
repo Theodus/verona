@@ -411,7 +411,7 @@ namespace verona::rt
       }
     }
 
-  protected:
+    // protected:
     void schedule()
     {
       // This should only be called if the cown is known to have been
@@ -430,6 +430,7 @@ namespace verona::rt
       // assert(can_lifo_schedule() || Scheduler::debug_not_running());
 
       t = Scheduler::round_robin();
+      queue.wake();
       t->schedule_lifo(this);
     }
 

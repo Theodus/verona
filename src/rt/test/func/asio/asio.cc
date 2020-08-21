@@ -72,7 +72,16 @@ namespace verona::rt::io
             timer->data = req->owner;
             uv_timer_start(
               timer,
-              [](auto* h) { std::cout << "timeout: " << h << std::endl; },
+              [](auto* h) {
+                auto* p = (Cown*)h->data;
+                if (p != nullptr)
+                {
+                  rt::Cown::acquire(p);
+                  p->schedule();
+                }
+
+                std::cout << "timeout to " << p << std::endl;
+              },
               req->timeout,
               (req->oneshot) ? 0 : req->timeout);
             break;
@@ -174,6 +183,7 @@ namespace verona::rt::io
 
     void send(Request* req)
     {
+      Scheduler::add_external_event_source();
       requests.enqueue(req);
       uv_async_send(&request_notify);
     }
@@ -183,13 +193,26 @@ namespace verona::rt::io
 struct TimerNotify : public verona::rt::VCown<TimerNotify>
 {};
 
+struct IOEventCB : public verona::rt::VBehaviour<IOEventCB>
+{
+  std::string name;
+
+public:
+  IOEventCB(std::string name_) : name(name_) {}
+
+  void f()
+  {
+    std::cout << "I/O: " << name << std::endl;
+  }
+};
+
 int main()
 {
   static constexpr size_t cores = 4;
 
   auto* alloc = snmalloc::ThreadAlloc::get();
 #ifdef USE_SYSTEMATIC_TESTING
-  // Systematic::enable_logging();
+  Systematic::enable_logging();
 #else
   // UNUSED(seed);
 #endif
@@ -205,10 +228,15 @@ int main()
   }
 
   auto* timer_notify = new TimerNotify;
+  // Deschedule, for promise
+  timer_notify->wake();
   event_loop->send(
     verona::rt::io::Request::timer(alloc, timer_notify, 1'000, true));
 
+  verona::rt::Cown::schedule<IOEventCB>(timer_notify, "timer1");
+
   sched.run();
+  // TODO: shutdown when all schedulerthreads have zero event_sources
   event_loop->wait();
   return 0;
 }

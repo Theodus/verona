@@ -48,6 +48,7 @@ namespace verona::rt
     /// Count of external event sources, such as I/O, that will prevent
     /// quiescence.
     std::atomic<size_t> external_event_sources = 0;
+
     // Pausing if value is odd.
     // Is not atomic, since updates are only made while a lock is held.
     // We are assuming that no partial write will be observed.
