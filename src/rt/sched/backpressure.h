@@ -159,7 +159,13 @@ namespace verona::rt
     /**
      * Reserved for future use.
      */
-    uint32_t : 5;
+    uint32_t : 3;
+
+  public:
+    uint32_t io : 1;
+    uint32_t io_ready : 1;
+
+  private:
     /**
      * Indicates if the token message is in a cown's queue. If zero, a new token
      * message should be added if the cown runs another message.
@@ -173,7 +179,12 @@ namespace verona::rt
 
   public:
     Backpressure() noexcept
-    : _current_load(0), _load_hist(0), _has_token(0), _response_state(0)
+    : _current_load(0),
+      _load_hist(0),
+      io(0),
+      io_ready(0),
+      _has_token(0),
+      _response_state(0)
     {}
 
     bool operator==(Backpressure& other) const

@@ -389,6 +389,23 @@ namespace verona::rt
       }
     }
 
+    void mark_io()
+    {
+      auto bp = backpressure.load(std::memory_order_relaxed);
+      bp.io = 1;
+      bp.io_ready = 0;
+      backpressure.store(bp, std::memory_order_relaxed);
+    }
+
+    // TODO: don't use backpressure bits for IO ready! This will clobber
+    // arbitrary writes.
+    void mark_io_ready(bool ready)
+    {
+      auto bp = backpressure.load(std::memory_order_relaxed);
+      bp.io_ready = ready;
+      backpressure.store(bp, std::memory_order_relaxed);
+    }
+
     void init(Alloc* alloc, const Descriptor* desc, EpochMark epoch)
     {
       make_cown();
@@ -1110,6 +1127,16 @@ namespace verona::rt
         // Reschedule the other cowns.
         for (size_t s = 0; s < (senders_count - 1); s++)
           senders[s]->schedule();
+
+        if (bp.io == 1)
+        {
+          cown_notified();
+          if (backpressure.load(std::memory_order_relaxed).io_ready == 0)
+          {
+            std::cout << "io desched" << std::endl;
+            return false;
+          }
+        }
 
         alloc->dealloc(senders, senders_count * sizeof(Cown*));
 
