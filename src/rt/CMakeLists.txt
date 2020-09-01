@@ -122,7 +122,17 @@ if(NOT DEFINED VERONA_RT_ONLY_HEADER_LIBRARY)
           add_test(${TESTNAME} ${TESTNAME})
           target_compile_definitions(${TESTNAME} PRIVATE USE_FLIGHT_RECORDER)
         endif ()
-        endforeach()
+        if(${TESTNAME} MATCHES "asio")
+          target_link_libraries(${TESTNAME}
+            -L/usr/local/lib/pony/0.37.0-44effcac/lib/native/
+            ponyrt)
+          target_include_directories(${TESTNAME} PRIVATE
+          /home/theodus/src/ponylang/ponyc/src/common/pony/detail/
+          /home/theodus/src/ponylang/ponyc/src/common
+          /home/theodus/src/ponylang/ponyc/src/libponyrt/asio/)
+          target_compile_options(${TESTNAME} PRIVATE -Wno-error)
+        endif()
+      endforeach()
     endforeach()
   endforeach()
 
