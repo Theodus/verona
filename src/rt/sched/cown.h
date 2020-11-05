@@ -115,6 +115,7 @@ namespace verona::rt
 
     std::atomic<Status> status{};
     std::atomic<uintptr_t> bp_state{(Cown*)nullptr | Priority::Normal};
+    std::atomic<size_t> load = 0;
 
     static Cown* create_token_cown()
     {
@@ -526,16 +527,6 @@ namespace verona::rt
       assert(body->index <= last);
 
       auto high_priority = false;
-      if (body->index == 0)
-      {
-        // If priority is needed for any cown in this message, start unmuting
-        // cowns in the body so that they can start running messages in their
-        // queue.
-        high_priority = std::any_of(
-          &body->cowns[0], &body->cowns[body->count], [](const auto* c) {
-            return (c->priority() & PriorityMask::High);
-          });
-      }
 
       for (; body->index < body->count; body->index++)
       {
@@ -560,13 +551,19 @@ namespace verona::rt
             high_priority = cur->set_blocker(next);
         }
 
+        if (next->load > 200)
+          high_priority = true;
+
         // Send the message to the next cown. Return false if the fast send has
         // been interrupted (the cown is already scheduled).
         auto try_fast_send = [next, m]() -> bool {
           bool needs_scheduling = next->send<YesTransfer, YesTryFast>(m);
           if (!needs_scheduling)
+          {
             Systematic::cout()
               << "MultiMessage " << m << ": fast send interrupted" << std::endl;
+            next->load.fetch_add(1);
+          }
 
           return needs_scheduling;
         };
@@ -978,20 +975,14 @@ namespace verona::rt
         return true;
       }
 
-      if (
-        (!stat.has_token() && (curr->index == 0)) ||
-        (stat.current_load() == 0xff))
-      {
-        stat.reset_load();
-      }
       if (!stat.has_token())
       {
         Systematic::cout() << "Cown " << this << ": enqueue message token"
                            << std::endl;
         queue.enqueue(stub_msg(alloc));
       }
-      stat.inc_load();
       stat.set_has_token(true);
+      load.fetch_add(1);
 
 #ifdef USE_SYSTEMATIC_TESTING
       if (Systematic::coin(5))
@@ -1039,14 +1030,12 @@ namespace verona::rt
       auto until = queue.peek_back();
       yield(); // Reading global state in peek_back().
 
-      const auto stat = status.load(std::memory_order_acquire);
       assert(priority() != Priority::Low);
 
       // The batch limit is between 100 and 251, depending on the load.
-      const auto batch_limit = (size_t)100 | ((size_t)stat.total_load() >> 3);
+      const auto batch_limit = (size_t)100;
 
-      Systematic::cout() << "Cown " << this << " load: " << stat.total_load()
-                         << std::endl;
+      Systematic::cout() << "Cown " << this << " load: " << load << std::endl;
 
       auto notified_called = false;
       auto notify = false;
@@ -1138,7 +1127,12 @@ namespace verona::rt
         // be rescheduled, even if it has pending work. This also means the
         // cown's queue should not be marked as empty, even if it is.
         if (!run_step(curr))
+        {
+          auto l = load.fetch_sub(1);
+          assert(l != 0);
+          UNUSED(l);
           return false;
+        }
 
         if (apply_backpressure(senders, senders_count))
           return false;
