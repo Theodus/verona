@@ -386,7 +386,7 @@ namespace verona::rt
         ((test_rc << SHIFT) | (uint8_t)RegionMD::RC);
     }
 
-    intptr_t debug_rc()
+    intptr_t debug_rc() const
     {
       return (intptr_t)get_header().bits >> SHIFT;
     }
