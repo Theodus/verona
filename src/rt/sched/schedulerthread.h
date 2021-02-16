@@ -99,25 +99,13 @@ namespace verona::rt
     size_t total_cowns = 0;
     std::atomic<size_t> free_cowns = 0;
 
-    /// The MessageBody of a running behaviour.
-    typename T::MessageBody* message_body = nullptr;
-    /// The mutor is the first high priority cown that receives a message from a
-    /// set of cowns running a behaviour on this scheduler thread.
-    T* mutor = nullptr;
-    /// The set of cowns muted on this scheduler thread. These are unmuted and
-    /// cleared before scheduler sleep, or in some stages of the LD protocol.
-    ObjectMap<T*> mute_set;
-
     T* get_token_cown()
     {
       assert(token_cown);
       return token_cown;
     }
 
-    SchedulerThread()
-    : token_cown{T::create_token_cown()},
-      q{token_cown},
-      mute_set{ThreadAlloc::get()}
+    SchedulerThread() : token_cown{T::create_token_cown()}, q{token_cown}
     {
       token_cown->set_owning_thread(this);
     }
@@ -126,8 +114,6 @@ namespace verona::rt
     {
       if (t.joinable())
         t.join();
-
-      assert(mute_set.size() == 0);
     }
 
     template<typename... Args>
@@ -196,33 +182,6 @@ namespace verona::rt
           should_steal_for_fairness = true;
         }
       }
-    }
-
-    /**
-     * Track a cown muted on this thread so that it may be unmuted prior to
-     * shutdown.
-     */
-    void mute_set_add(T* cown)
-    {
-      bool inserted = mute_set.insert(alloc, cown).first;
-      if (inserted)
-        cown->weak_acquire();
-    }
-
-    /**
-     * Clear the mute set and unmute any muted cowns in the set.
-     */
-    void mute_set_clear()
-    {
-      Systematic::cout() << "Clear mute set" << std::endl;
-      for (auto entry = mute_set.begin(); entry != mute_set.end(); ++entry)
-      {
-        // This operation should be safe if the cown has been collected but the
-        // stub exists.
-        entry.key()->backpressure_transition(Priority::Normal);
-        entry.key()->weak_release(alloc);
-      }
-      mute_set.clear(alloc);
     }
 
     /**
@@ -374,8 +333,6 @@ namespace verona::rt
 #endif
       }
 
-      assert(mute_set.size() == 0);
-
       Systematic::cout() << "Begin teardown (phase 1)" << std::endl;
 
       cown = list;
@@ -510,13 +467,8 @@ namespace verona::rt
           UNUSED(tsc);
         }
 #endif
-          if (mute_set.size() != 0)
-        {
-          mute_set_clear();
-          continue;
-        }
-        // Enter sleep only when the queue doesn't contain any real cowns.
-        else if (state == ThreadState::NotInLD && q.is_empty())
+          // Enter sleep only when the queue doesn't contain any real cowns.
+          if (state == ThreadState::NotInLD && q.is_empty())
         {
           // We've been spinning looking for work for some time. While paused,
           // our running flag may be set to false, in which case we terminate.
@@ -761,8 +713,6 @@ namespace verona::rt
       Systematic::cout() << "send_epoch (2): " << send_epoch << std::endl;
 
       // Send empty messages to all cowns that can be LIFO scheduled.
-
-      mute_set_clear(); // TODO: is this necesary?
 
       T* p = list;
       while (p != nullptr)
