@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "../pal/pal.h"
 #include "cpu.h"
 #include "ds/hashmap.h"
 #include "ds/mpscq.h"
@@ -108,6 +109,11 @@ namespace verona::rt
     /// cleared before scheduler sleep, or in some stages of the LD protocol.
     ObjectMap<T*> mute_set;
 
+#ifdef PLATFORM_SUPPORTS_IO
+    io::Poller io_poller;
+    std::atomic<size_t> pending_io{0};
+#endif
+
     T* get_token_cown()
     {
       assert(token_cown);
@@ -195,6 +201,8 @@ namespace verona::rt
           Systematic::cout() << "Should steal for fairness!" << std::endl;
           should_steal_for_fairness = true;
         }
+
+        poll_io();
       }
     }
 
@@ -225,6 +233,47 @@ namespace verona::rt
       mute_set.clear(alloc);
     }
 
+    // TODO: docs
+    void poll_io(int32_t timeout = 0)
+    {
+#ifdef PLATFORM_SUPPORTS_IO
+      Systematic::cout() << "Polling for IO (" << timeout << "ms)" << std::endl;
+      const auto cowns = io_poller.poll(alloc, timeout);
+      for (size_t i = 0; i < cowns.second; i++)
+      {
+        // TODO: schedule cown, even when already "woke" (promises). What if
+        // already fulfilled?
+        auto* cown = (T*)cowns.first[i];
+        cown->mark_notify();
+      }
+#endif
+    }
+
+  public:
+#ifdef PLATFORM_SUPPORTS_IO
+    io::Poller* get_io_poller()
+    {
+      return &io_poller;
+    }
+
+    bool has_pending_io()
+    {
+      return pending_io.load(std::memory_order_seq_cst);
+    }
+
+    void add_pending_io()
+    {
+      pending_io.fetch_add(1, std::memory_order_seq_cst);
+    }
+
+    void remove_pending_io()
+    {
+      assert(has_pending_io());
+      pending_io.fetch_sub(1, std::memory_order_seq_cst);
+    }
+#endif
+
+  private:
     /**
      * Startup is supplied to initialise thread local state before the runtime
      * starts.
@@ -509,6 +558,15 @@ namespace verona::rt
         {
           UNUSED(tsc);
         }
+#endif
+#ifdef PLATFORM_SUPPORTS_IO
+          if (has_pending_io())
+        {
+          // Block on IO for 10ms.
+          poll_io(10);
+          continue;
+        }
+        else
 #endif
           if (mute_set.size() != 0)
         {

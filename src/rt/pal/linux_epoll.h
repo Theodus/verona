@@ -9,24 +9,29 @@
 #  include "snmalloc.h"
 
 #  include <sys/epoll.h>
+#  include <utility>
+
+namespace verona::rt
+{
+  class Cown;
+}
 
 namespace verona::rt::io
 {
   using namespace snmalloc;
 
-  class Cown;
   class LinuxEpollPoller;
 
   class LinuxEpollEvent
   {
-    epoll_event _ev;
     LinuxEpollPoller* _poller;
+    epoll_event _ev;
+    int _fd;
 
   public:
-    LinuxEpollEvent(LinuxEpollPoller* poller, int fd) : _poller(poller)
+    LinuxEpollEvent(LinuxEpollPoller* poller, int fd) : _poller(poller), _fd(fd)
     {
       memset(&_ev, 0, sizeof(_ev));
-      _ev.data.fd = fd;
     }
 
     LinuxEpollPoller* poller()
@@ -34,14 +39,14 @@ namespace verona::rt::io
       return _poller;
     }
 
+    int fd() const
+    {
+      return _fd;
+    }
+
     Cown*& cown()
     {
       return (Cown*&)_ev.data.ptr;
-    }
-
-    int& fd()
-    {
-      return _ev.data.fd;
     }
 
     uint32_t& flags()
@@ -94,8 +99,12 @@ namespace verona::rt::io
 
   private:
     MPSCQ<Msg> q;
-    std::atomic<size_t> event_count = 0;
+    std::atomic<size_t> event_count{0};
     int epfd;
+
+    static constexpr size_t max_events = 128;
+    epoll_event events[max_events];
+    Cown* event_cowns[max_events];
 
   public:
     LinuxEpollPoller()
@@ -134,6 +143,8 @@ namespace verona::rt::io
             if (res != 0)
               Systematic::cout() << "error: epoll_ctl(EPOLL_CTL_ADD) "
                                  << strerror(errno) << std::endl;
+
+            break;
           }
           case Msg::Kind::Resub:
           {
@@ -142,6 +153,8 @@ namespace verona::rt::io
             if (res != 0)
               Systematic::cout() << "error: epoll_ctl(EPOLL_CTL_MOD) "
                                  << strerror(errno) << std::endl;
+
+            break;
           }
           case Msg::Kind::Unsub:
           {
@@ -149,11 +162,31 @@ namespace verona::rt::io
             if (res != 0)
               Systematic::cout() << "error: epoll_ctl(EPOLL_CTL_DEL) "
                                  << strerror(errno) << std::endl;
+
+            break;
           }
           default:
             assert(false);
         }
       }
+    }
+
+    std::pair<Cown**, size_t> poll(Alloc* alloc, int32_t timeout_ms = 0)
+    {
+      handle_messages(alloc);
+      auto res = epoll_wait(epfd, events, max_events, timeout_ms);
+      if (res == -1)
+      {
+        Systematic::cout() << "error: epoll_wait " << strerror(errno)
+                           << std::endl;
+        return {event_cowns, 0};
+      }
+
+      auto count = (size_t)res;
+      for (size_t i = 0; i < count; i++)
+        event_cowns[i] = (Cown*)events[i].data.ptr;
+
+      return {event_cowns, count};
     }
   };
 
